@@ -211,8 +211,8 @@
     </div>
     <div class="setting-row">
       <label>렌더링 배율</label>
-      <input type="range" id="scaleSlider" min="2" max="4" value="2" step="0.5">
-      <span class="val" id="scaleVal">2.0×</span>
+      <input type="range" id="scaleSlider" min="2" max="4" value="3" step="0.5">
+      <span class="val" id="scaleVal">3.0×</span>
     </div>
     <div class="setting-row">
       <label>감지 대상 색상</label>
@@ -398,61 +398,50 @@
       // 픽셀 치환 (HSL 방식)
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data    = imgData.data;
+      const factor  = (259 * (contrastAmt + 255)) / (255 * (259 - contrastAmt));
       let removed   = 0;
 
-      // threshold(5~50) → Hue 허용 범위로 매핑: 기본±15도, 최대±40도
-      const hueMargin = 15 + threshold * 0.5;
+      // threshold(5~50) → Hue 허용 범위로 매핑: 기본±10도, 최대±25도
+      const hueMargin = 10 + threshold * 0.3;
 
       for (let i = 0; i < data.length; i += 4) {
-        const r = data[i] / 255;
-        const g = data[i + 1] / 255;
-        const b = data[i + 2] / 255;
+        let r = data[i], g = data[i+1], b = data[i+2];
 
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const delta = max - min;
-
-        // 채도·밝기 필터: 채도 낮거나 너무 어두우면 스킵
+        // HSL 변환 (노란색 판별용)
+        const rf = r / 255, gf = g / 255, bf = b / 255;
+        const max = Math.max(rf, gf, bf), min = Math.min(rf, gf, bf), delta = max - min;
+        
+        if (delta > 0.05) { // 색상 정보가 있는 경우에만 처리
         const l = (max + min) / 2;
-        const s = delta === 0 ? 0 : delta / (1 - Math.abs(2 * l - 1));
-        if (s < 0.3 || l < 0.4) continue;
-
-        // Hue 계산
         let h = 0;
-        if (delta !== 0) {
-          if (max === r)      h = 60 * (((g - b) / delta) % 6);
-          else if (max === g) h = 60 * ((b - r) / delta + 2);
-          else                h = 60 * ((r - g) / delta + 4);
-          if (h < 0) h += 360;
-        }
+        if (max === rf)      h = 60 * (((gf - bf) / delta) % 6);
+        else if (max === gf) h = 60 * ((bf - rf) / delta + 2);
+        else                h = 60 * ((rf - gf) / delta + 4);
+        if (h < 0) h += 360;
 
-        // 노란색 Hue 범위: 40°~70° 중심, 허용 오차 범위로 확장
         const hueCenter = 55;
-        if (Math.abs(h - hueCenter) <= hueMargin) {
-          data[i]     = 255;
-          data[i + 1] = 255;
-          data[i + 2] = 255;
-          data[i + 3] = 255;
-          removed++;
+          // 노란색 범위 감지 (외곽선을 위해 범위를 약간 넓게 잡음)
+          if (h <= 85 && h >= 30 && Math.abs(h - hueCenter) <= hueMargin + 5) {
+            const avgRG = (r + g) / 2;
+            if (avgRG > b) {
+              // 핵심: 노란색(B가 낮음)을 흰색/회색(B가 높음)으로 중화
+              // 파란색 수치를 R, G의 평균만큼 끌어올려 노란기를 제거함
+              data[i+2] = b + (avgRG - b) * 0.95; 
+              data[i] = Math.max(data[i], data[i+2]);
+              data[i+1] = Math.max(data[i+1], data[i+2]);
+              removed++;
+            }
+          }
+        }
+
+        // 2. 중화된 픽셀 혹은 원본 픽셀에 대비 적용
+        if (contrastAmt > 0) {
+          data[i]   = Math.min(255, Math.max(0, factor * (data[i]   - 128) + 128));
+          data[i+1] = Math.min(255, Math.max(0, factor * (data[i+1] - 128) + 128));
+          data[i+2] = Math.min(255, Math.max(0, factor * (data[i+2] - 128) + 128));
         }
       }
-
       ctx.putImageData(imgData, 0, 0);
-
-      // 대비 강화: CSS filter 대신 픽셀 직접 조작
-      if (contrastAmt > 0) {
-        progressStatus.textContent = `페이지 ${pageNum} 대비 강화 중...`;
-        await new Promise(r => setTimeout(r, 10));
-        const contrastData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const cd = contrastData.data;
-        const factor = (259 * (contrastAmt + 255)) / (255 * (259 - contrastAmt));
-        for (let i = 0; i < cd.length; i += 4) {
-          cd[i]     = Math.min(255, Math.max(0, factor * (cd[i]     - 128) + 128));
-          cd[i + 1] = Math.min(255, Math.max(0, factor * (cd[i + 1] - 128) + 128));
-          cd[i + 2] = Math.min(255, Math.max(0, factor * (cd[i + 2] - 128) + 128));
-        }
-        ctx.putImageData(contrastData, 0, 0);
-      }
 
       processedCanvases.push(canvas);
       totalRemovedPixels += removed;
@@ -506,8 +495,8 @@
 
       for (let i = 0; i < processedCanvases.length; i++) {
         if (i > 0) pdf.addPage([processedCanvases[i].width, processedCanvases[i].height], orientation);
-        const imgData = processedCanvases[i].toDataURL('image/jpeg', 0.95);
-        pdf.addImage(imgData, 'JPEG', 0, 0, processedCanvases[i].width, processedCanvases[i].height, undefined, 'FAST');
+        const imgData = processedCanvases[i].toDataURL('image/png');
+        pdf.addImage(imgData, 'PNG', 0, 0, processedCanvases[i].width, processedCanvases[i].height, undefined, 'MEDIUM');
         log(`PDF 페이지 ${i + 1} 추가 완료`, 'ok');
       }
 
